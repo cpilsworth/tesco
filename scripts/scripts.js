@@ -1,36 +1,28 @@
+/* eslint-disable no-underscore-dangle */
 /* eslint-disable import/no-cycle */
 import { events } from '@dropins/tools/event-bus.js';
 import {
-  sampleRUM,
-  loadHeader,
-  loadFooter,
+  buildBlock,
+  decorateBlocks,
   decorateButtons,
   decorateIcons,
   decorateSections,
-  decorateBlocks,
   decorateTemplateAndTheme,
+  loadFooter,
+  loadHeader,
+  getMetadata,
+  loadScript,
+  toCamelCase,
+  toClassName,
+  readBlockConfig,
   waitForFirstImage,
   loadSection,
   loadSections,
   loadCSS,
-  getMetadata,
-  loadScript,
-  toCamelCase,
-  toClassName
+  sampleRUM,
 } from './aem.js';
-import { getProduct, getSkuFromUrl, trackHistory } from './commerce.js';
-import initializeDropins from './dropins.js';
-
-const LCP_BLOCKS = [
-  'product-list-page',
-  'product-list-page-custom',
-  'product-details',
-  'product-details-plan',
-  'commerce-cart',
-  'commerce-checkout',
-  'commerce-account',
-  'commerce-login',
-]; // add your LCP blocks to the list
+import { trackHistory } from './commerce.js';
+import initializeDropins from './initializers/index.js';
 
 const AUDIENCES = {
   mobile: () => window.innerWidth < 600,
@@ -44,85 +36,15 @@ const AUDIENCES = {
  * @returns an array of HTMLElement nodes that match the given scope
  */
 export function getAllMetadata(scope) {
-  return [
-    ...document.head.querySelectorAll(`meta[property^="${scope}:"],meta[name^="${scope}-"]`),
-  ].reduce((res, meta) => {
+  return [...document.head.querySelectorAll(`meta[property^="${scope}:"],meta[name^="${scope}-"]`)]
+    .reduce((res, meta) => {
     const id = toClassName(
       meta.name
         ? meta.name.substring(scope.length + 1)
-        : meta.getAttribute('property').split(':')[1],
-    );
+        : meta.getAttribute('property').split(':')[1]);
     res[id] = meta.getAttribute('content');
     return res;
   }, {});
-}
-
-/**
- * Returns the current timestamp used for scheduling content.
- */
-export function getTimestamp() {
-  if (
-    (window.location.hostname === 'localhost' || window.location.hostname.endsWith('.hlx.page')) &&
-    window.sessionStorage.getItem('preview-date')
-  ) {
-    return Date.parse(window.sessionStorage.getItem('preview-date'));
-  }
-  return Date.now();
-}
-
-/**
- * Determines whether scheduled content with a given date string should be displayed.
- */
-export function shouldBeDisplayed(date) {
-  const now = getTimestamp();
-
-  const split = date.split('-');
-  if (split.length === 2) {
-    const from = Date.parse(split[0].trim());
-    const to = Date.parse(split[1].trim());
-    return now >= from && now <= to;
-  }
-  if (date !== '') {
-    const from = Date.parse(date.trim());
-    return now >= from;
-  }
-  return false;
-}
-
-/**
- * Remove scheduled blocks that should not be displayed.
- */
-function scheduleBlocks(main) {
-  const blocks = main.querySelectorAll('div.section > div > div');
-  blocks.forEach((block) => {
-    let date;
-    const rows = block.querySelectorAll(':scope > div');
-    rows.forEach((row) => {
-      const cols = [...row.children];
-      if (cols.length > 1) {
-        if (cols[0].textContent.toLowerCase() === 'date') {
-          date = cols[1].textContent;
-          row.remove();
-        }
-      }
-    });
-    if (date && !shouldBeDisplayed(date)) {
-      block.remove();
-    }
-  });
-}
-
-/**
- * Remove scheduled sections that should not be displayed.
- */
-function scheduleSections(main) {
-  const sections = main.querySelectorAll('div.section');
-  sections.forEach((section) => {
-    const { date } = section.dataset;
-    if (date && !shouldBeDisplayed(date)) {
-      section.remove();
-    }
-  });
 }
 
 // Define an execution context
@@ -137,37 +59,18 @@ const pluginContext = {
 };
 
 /**
- * Moves all the attributes from a given elmenet to another given element.
- * @param {Element} from the element to copy attributes from
- * @param {Element} to the element to copy attributes to
+ * Builds hero block and prepends to main in a new section.
+ * @param {Element} main The container element
  */
-export function moveAttributes(from, to, attributes) {
-  if (!attributes) {
-    // eslint-disable-next-line no-param-reassign
-    attributes = [...from.attributes].map(({ nodeName }) => nodeName);
-  }
-  attributes.forEach((attr) => {
-    const value = from.getAttribute(attr);
-    if (value) {
-      to?.setAttribute(attr, value);
-      from?.removeAttribute(attr);
+function buildHeroBlock(main) {
+  const h1 = main.querySelector('h1');
+  const picture = main.querySelector('picture');
+  // eslint-disable-next-line no-bitwise
+  if (h1 && picture && (h1.compareDocumentPosition(picture) & Node.DOCUMENT_POSITION_PRECEDING)) {
+    const section = document.createElement('div');
+    section.append(buildBlock('hero', { elems: [picture, h1] }));
+    main.prepend(section);
     }
-  });
-}
-
-/**
- * Move instrumentation attributes from a given element to another given element.
- * @param {Element} from the element to copy attributes from
- * @param {Element} to the element to copy attributes to
- */
-export function moveInstrumentation(from, to) {
-  moveAttributes(
-    from,
-    to,
-    [...from.attributes]
-      .map(({ nodeName }) => nodeName)
-      .filter((attr) => attr.startsWith('data-aue-') || attr.startsWith('data-richtext-')),
-  );
 }
 
 /**
@@ -199,12 +102,41 @@ function autolinkModals(element) {
  * Builds all synthetic blocks in a container element.
  * @param {Element} main The container element
  */
-function buildAutoBlocks() {
+function buildAutoBlocks(main) {
   try {
-    // TODO: add auto block, if needed
+    buildHeroBlock(main);
   } catch (error) {
     // eslint-disable-next-line no-console
     console.error('Auto Blocking failed', error);
+  }
+}
+
+/**
+ * Decorate Columns Template to the main element.
+ * @param {Element} main The container element
+ */
+function buildTemplateColumns(doc) {
+  const columns = doc.querySelectorAll('main > div.section[data-column-width]');
+
+  columns.forEach((column) => {
+    const columnWidth = column.getAttribute('data-column-width');
+    const gap = column.getAttribute('data-gap');
+
+    if (columnWidth) {
+      column.style.setProperty('--column-width', columnWidth);
+      column.removeAttribute('data-column-width');
+    }
+
+    if (gap) {
+      column.style.setProperty('--gap', `var(--spacing-${gap.toLocaleLowerCase()})`);
+      column.removeAttribute('data-gap');
+    }
+  });
+}
+
+async function applyTemplates(doc) {
+  if (doc.body.classList.contains('columns')) {
+    buildTemplateColumns(doc);
   }
 }
 
@@ -237,49 +169,39 @@ function preloadFile(href, as) {
  */
 async function loadEager(doc) {
   document.documentElement.lang = 'en';
-  await initializeDropins();
   decorateTemplateAndTheme();
 
   // Instrument experimentation plugin
-  if (
-    getMetadata('experiment') ||
-    Object.keys(getAllMetadata('campaign')).length ||
-    Object.keys(getAllMetadata('audience')).length
-  ) {
+  if (getMetadata('experiment')
+    || Object.keys(getAllMetadata('campaign')).length
+    || Object.keys(getAllMetadata('audience')).length) {
     // eslint-disable-next-line import/no-relative-packages
     const { loadEager: runEager } = await import('../plugins/experimentation/src/index.js');
     await runEager(document, { audiences: AUDIENCES }, pluginContext);
-
-    sampleRUM.enhance();
   }
+
+  await initializeDropins();
 
   window.adobeDataLayer = window.adobeDataLayer || [];
 
   let pageType = 'CMS';
   if (document.body.querySelector('main .product-details')) {
     pageType = 'Product';
-    const sku = getSkuFromUrl();
-    window.getProductPromise = getProduct(sku);
 
-    preloadFile('/scripts/__dropins__/storefront-pdp/containers/ProductDetails.js', 'script');
+    // initialize pdp
+    await import('./initializers/pdp.js');
+
+    // Preload PDP Dropins assets
     preloadFile('/scripts/__dropins__/storefront-pdp/api.js', 'script');
     preloadFile('/scripts/__dropins__/storefront-pdp/render.js', 'script');
-    preloadFile('/scripts/__dropins__/storefront-pdp/chunks/initialize.js', 'script');
-    preloadFile('/scripts/__dropins__/storefront-pdp/chunks/getRefinedProduct.js', 'script');
-  } else if (document.body.querySelector('main .product-details-custom')) {
-    pageType = 'Product';
-    preloadFile('/scripts/preact.js', 'script');
-    preloadFile('/scripts/htm.js', 'script');
-    preloadFile('/blocks/product-details-custom/ProductDetailsCarousel.js', 'script');
-    preloadFile('/blocks/product-details-custom/ProductDetailsSidebar.js', 'script');
-    preloadFile('/blocks/product-details-custom/ProductDetailsShimmer.js', 'script');
-    preloadFile('/blocks/product-details-custom/Icon.js', 'script');
-
-    const blockConfig = readBlockConfig(
-      document.body.querySelector('main .product-details-custom'),
-    );
-    const sku = getSkuFromUrl() || blockConfig.sku;
-    window.getProductPromise = getProduct(sku);
+    preloadFile('/scripts/__dropins__/storefront-pdp/containers/ProductHeader.js', 'script');
+    preloadFile('/scripts/__dropins__/storefront-pdp/containers/ProductPrice.js', 'script');
+    preloadFile('/scripts/__dropins__/storefront-pdp/containers/ProductShortDescription.js', 'script');
+    preloadFile('/scripts/__dropins__/storefront-pdp/containers/ProductOptions.js', 'script');
+    preloadFile('/scripts/__dropins__/storefront-pdp/containers/ProductQuantity.js', 'script');
+    preloadFile('/scripts/__dropins__/storefront-pdp/containers/ProductDescription.js', 'script');
+    preloadFile('/scripts/__dropins__/storefront-pdp/containers/ProductAttributes.js', 'script');
+    preloadFile('/scripts/__dropins__/storefront-pdp/containers/ProductGallery.js', 'script');
   } else if (document.body.querySelector('main .product-list-page')) {
     pageType = 'Category';
     preloadFile('/scripts/widgets/search.js', 'script');
@@ -312,18 +234,28 @@ async function loadEager(doc) {
       minXOffset: 0,
       minYOffset: 0,
     },
-  });
-  if (pageType !== 'Product') {
+    },
+    {
+      shoppingCartContext: {
+        totalQuantity: 0,
+      },
+    },
+  );
     window.adobeDataLayer.push((dl) => {
       dl.push({ event: 'page-view', eventInfo: { ...dl.getState() } });
     });
-  }
 
   const main = doc.querySelector('main');
   if (main) {
+    // Main Decorations
     decorateMain(main);
-    document.body.classList.add('appear');
+
+    // Template Decorations
+    await applyTemplates(doc);
+
+    // Load LCP blocks
     await loadSection(main.querySelector('.section'), waitForFirstImage);
+    document.body.classList.add('appear');
   }
 
   events.emit('eds/lcp', true);
@@ -367,18 +299,15 @@ async function loadLazy(doc) {
   trackHistory();
 
   // Implement experimentation preview pill
-  if (
-    getMetadata('experiment') ||
-    Object.keys(getAllMetadata('campaign')).length ||
-    Object.keys(getAllMetadata('audience')).length
-  ) {
+  if ((getMetadata('experiment')
+    || Object.keys(getAllMetadata('campaign')).length
+    || Object.keys(getAllMetadata('audience')).length)) {
     // eslint-disable-next-line import/no-relative-packages
     const { loadLazy: runLazy } = await import('../plugins/experimentation/src/index.js');
     await runLazy(document, { audiences: AUDIENCES }, pluginContext);
   }
-
-  // Load scheduling sidekick extension
-  import('./scheduling/scheduling.js');
+  loadCSS(`${window.hlx.codeBasePath}/styles/lazy-styles.css`);
+  loadFonts();
 }
 
 /**
@@ -396,7 +325,7 @@ export async function fetchIndex(indexFile, pageSize = 500) {
     const json = await resp.json();
 
     const newIndex = {
-      complete: json.limit + json.offset === json.total,
+      complete: (json.limit + json.offset) === json.total,
       offset: json.offset + pageSize,
       promise: null,
       data: [...window.index[indexFile].data, ...json.data],
@@ -424,61 +353,10 @@ export async function fetchIndex(indexFile, pageSize = 500) {
   }
 
   window.index[indexFile].promise = handleIndex(window.index[indexFile].offset);
-  const newIndex = await window.index[indexFile].promise;
+  const newIndex = await (window.index[indexFile].promise);
   window.index[indexFile] = newIndex;
 
   return newIndex;
-}
-
-export function jsx(html, ...args) {
-  return html.slice(1).reduce((str, elem, i) => str + args[i] + elem, html[0]);
-}
-
-export function createAccordion(header, content, expanded = false) {
-  // Create a container for the accordion
-  const container = document.createElement('div');
-  container.classList.add('accordion');
-  const accordionContainer = document.createElement('details');
-  accordionContainer.classList.add('accordion-item');
-
-  // Create the accordion header
-  const accordionHeader = document.createElement('summary');
-  accordionHeader.classList.add('accordion-item-label');
-  accordionHeader.innerHTML = `<div>${header}</div>`;
-
-  // Create the accordion content
-  const accordionContent = document.createElement('div');
-  accordionContent.classList.add('accordion-item-body');
-  accordionContent.innerHTML = content;
-
-  accordionContainer.append(accordionHeader, accordionContent);
-  container.append(accordionContainer);
-
-  if (expanded) {
-    accordionContent.classList.toggle('active');
-    accordionHeader.classList.add('open-default');
-    accordionContainer.setAttribute('open', true);
-  }
-
-  function updateContent(newContent) {
-    accordionContent.innerHTML = newContent;
-    // accordionContent.innerHTML = '<p>Hello world</p>';
-  }
-
-  return [container, updateContent];
-}
-
-export function generateListHTML(data) {
-  let html = '<ul>';
-  data.forEach((item) => {
-    html += `<li>${item.label}: <span>${item.value}</span></li>`;
-  });
-  html += '</ul>';
-  return html;
-}
-
-export function isAuthorEnvironment() {
-  return document.querySelector('*[data-aue-resource]') !== null;
 }
 
 /**
@@ -499,3 +377,9 @@ async function loadPage() {
 }
 
 loadPage();
+
+(async function loadDa() {
+  if (!new URL(window.location.href).searchParams.get('dapreview')) return;
+  // eslint-disable-next-line import/no-unresolved
+  import('https://da.live/scripts/dapreview.js').then(({ default: daPreview }) => daPreview(loadPage));
+}());
